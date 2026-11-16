@@ -1,0 +1,307 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Booking Dashboard | Admin</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f7f6fb;color:#24213a;font-family:Arial,sans-serif;padding:30px}
+.container{max-width:1050px;margin:auto}
+h1{margin-bottom:5px}
+.muted{color:#777}
+.panel{background:white;padding:24px;border-radius:18px;margin:20px 0;box-shadow:0 5px 25px #241b3810}
+input{width:100%;padding:13px;border:1px solid #ddd;border-radius:10px;margin:8px 0 16px;font-size:15px}
+button{padding:11px 17px;border:0;border-radius:10px;background:#7654d6;color:white;cursor:pointer;font-weight:600}
+button:disabled{opacity:.5;cursor:not-allowed}
+.secondary{background:#eee;color:#333}
+.danger{background:#c94c5a}
+.row{display:flex;justify-content:space-between;align-items:center;gap:15px;flex-wrap:wrap}
+.request{border:1px solid #eee;border-radius:14px;padding:18px;margin:15px 0}
+.actions{display:flex;gap:8px;margin-top:15px}
+.status{font-size:12px;padding:5px 10px;border-radius:20px;background:#fff1d5;color:#956000}
+.status.approved{background:#e3f8eb;color:#187a40}
+.status.declined{background:#ffe8e8;color:#b33}
+#message{margin:12px 0;color:#b33}
+[hidden]{display:none!important}
+@media(max-width:600px){body{padding:15px}.panel{padding:17px}}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="row">
+    <div>
+      <h1>Booking Dashboard</h1>
+      <p class="muted">Manage your client meeting requests.</p>
+    </div>
+    <button id="logout" class="secondary" hidden>Log out</button>
+  </div>
+
+  <section id="login" class="panel">
+    <h2>Admin Login</h2>
+    <p class="muted">Sign in with your registered admin account.</p>
+
+    <form id="loginForm">
+      <label>Email</label>
+      <input id="email" type="email" required autocomplete="username">
+
+      <label>Password</label>
+      <input id="password" type="password" required autocomplete="current-password">
+
+      <button type="submit" id="loginBtn">Log in</button>
+    </form>
+    <p id="message" role="alert"></p>
+  </section>
+
+  <section id="dashboard" hidden>
+    <div class="panel">
+      <div class="row">
+        <div>
+          <h2>Booking Requests</h2>
+          <p class="muted" id="welcome"></p>
+        </div>
+        <button id="refresh" class="secondary">Refresh</button>
+      </div>
+      <p id="dashboardMessage" class="muted"></p>
+      <div id="requests"></div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+const SUPABASE_URL = 'https://vjggjbiqgwfmwmmeiqcr.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_QhCc-XaazKiF7BzFH-ZIpA_DWuQkZMP';
+
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const $ = id => document.getElementById(id);
+
+function message(text) {
+  $('message').textContent = text;
+}
+
+function escapeHTML(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;',
+    '"':'&quot;', "'":'&#39;'
+  })[char]);
+}
+
+async function checkAdmin(user) {
+  const { data, error } = await sb
+    .from('admin_users')
+    .select('user_id')
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new Error('This account is not registered as an admin.');
+}
+
+async function loadRequests() {
+  $('dashboardMessage').textContent = 'Loading requests...';
+  $('requests').innerHTML = '';
+
+  const { data, error } = await sb
+    .from('booking_requests')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    $('dashboardMessage').textContent = error.message;
+    return;
+  }
+
+  if (!data.length) {
+    $('dashboardMessage').textContent = 'No booking requests yet.';
+    return;
+  }
+
+  $('dashboardMessage').textContent = data.length + ' booking request(s)';
+
+  data.forEach(request => {
+    const card = document.createElement('div');
+    card.className = 'request';
+
+    const status = escapeHTML(request.status);
+    const dateTime = escapeHTML(
+      request.preferred_date + ' at ' +
+      request.preferred_time + ' (' +
+      request.timezone + ')'
+    );
+
+    card.innerHTML = `
+      <div class="row">
+        <h3>${escapeHTML(request.full_name)}</h3>
+        <span class="status ${status}">${status.toUpperCase()}</span>
+      </div>
+
+      <p><b>Email:</b> ${escapeHTML(request.email)}</p>
+      <p><b>Phone:</b> ${escapeHTML(request.phone || 'Not provided')}</p>
+      <p><b>Website:</b> ${escapeHTML(request.website || 'Not provided')}</p>
+      <p><b>Topic:</b> ${escapeHTML(request.topic || 'Not specified')}</p>
+      <p><b>Requested time:</b> ${dateTime}</p>
+      <p><b>Duration:</b> ${escapeHTML(request.duration_minutes)} minutes</p>
+      <p><b>Message:</b> ${escapeHTML(request.message || 'No message')}</p>
+
+      <div class="actions"></div>
+    `;
+
+    const actions = card.querySelector('.actions');
+
+    if (request.status === 'pending') {
+      const approve = document.createElement('button');
+      approve.textContent = 'Approve';
+      approve.onclick = () => updateRequest(request.id, 'approved', approve);
+
+      const decline = document.createElement('button');
+      decline.textContent = 'Decline';
+      decline.className = 'danger';
+      decline.onclick = () => updateRequest(request.id, 'declined', decline);
+
+      actions.append(approve, decline);
+    }
+
+    if (request.zoom_meeting_url) {
+      const link = document.createElement('a');
+      link.href = request.zoom_meeting_url;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.textContent = 'Zoom meeting link';
+      actions.append(link);
+    }
+
+    $('requests').appendChild(card);
+  });
+}
+
+async function updateRequest(id, status, button) {
+  const action = status === 'approved' ? 'approve' : 'decline';
+
+  if (!confirm('Are you sure you want to ' + action + ' this request?')) {
+    return;
+  }
+
+  button.disabled = true;
+  button.textContent = status === 'approved'
+    ? 'Creating Zoom meeting...'
+    : 'Declining...';
+
+  try {
+    const functionName = status === 'approved'
+      ? 'approve-booking'
+      : 'decline-booking';
+
+    const { data, error } = await sb.functions.invoke(functionName, {
+      body: { bookingId: id }
+    });
+
+    if (error) {
+      let details = error.message;
+
+      if (error.context) {
+        try {
+          const body = await error.context.json();
+          details = body.error || details;
+        } catch (_) {}
+      }
+
+      throw new Error(details);
+    }
+
+    if (!data || !data.success) {
+      throw new Error(data?.error || 'Could not process booking.');
+    }
+
+    if (status === 'approved') {
+      alert(
+        'Booking approved!\n\nZoom meeting created successfully.\n\n' +
+        data.join_url +
+        (data.email_sent ? '\n\nConfirmation email sent.' : '\n\nWarning: Confirmation email was not sent.')
+      );
+    } else {
+      alert(
+        data.email_sent
+          ? 'Booking declined successfully!\n\nDecline email sent to the client.'
+          : 'Booking declined, but the email could not be sent.\n\n' +
+            (data.email_error || 'Please check your Resend logs.')
+      );
+    }
+
+    await loadRequests();
+
+  } catch (error) {
+    console.error('Booking action error:', error);
+    alert('Could not process booking:\n' + error.message);
+
+    button.disabled = false;
+    button.textContent = status === 'approved' ? 'Approve' : 'Decline';
+  }
+}
+
+async function showDashboard(user) {
+  await checkAdmin(user);
+
+  $('login').hidden = true;
+  $('dashboard').hidden = false;
+  $('logout').hidden = false;
+  $('welcome').textContent = 'Logged in as ' + user.email;
+
+  await loadRequests();
+}
+
+$('loginForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  $('loginBtn').disabled = true;
+  message('Signing in...');
+
+  try {
+    const { data, error } = await sb.auth.signInWithPassword({
+      email: $('email').value.trim(),
+      password: $('password').value
+    });
+
+    if (error) throw error;
+
+    await showDashboard(data.user);
+    message('');
+  } catch (error) {
+    await sb.auth.signOut();
+    message(error.message);
+  } finally {
+    $('loginBtn').disabled = false;
+  }
+});
+
+$('refresh').addEventListener('click', loadRequests);
+
+$('logout').addEventListener('click', async () => {
+  await sb.auth.signOut();
+  $('dashboard').hidden = true;
+  $('login').hidden = false;
+  $('logout').hidden = true;
+  $('password').value = '';
+  message('You have logged out.');
+});
+
+async function initialize() {
+  const { data } = await sb.auth.getSession();
+
+  if (data.session) {
+    try {
+      await showDashboard(data.session.user);
+    } catch (error) {
+      await sb.auth.signOut();
+      message(error.message);
+    }
+  }
+}
+
+initialize();
+</script>
+</body>
+</html>
